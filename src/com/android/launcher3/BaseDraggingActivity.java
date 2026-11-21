@@ -21,8 +21,13 @@ import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.Intent;
+import android.database.ContentObserver;
+import android.database.Cursor;
 import android.graphics.Rect;
+import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.Process;
 import android.os.StrictMode;
 import android.os.UserHandle;
@@ -74,6 +79,12 @@ public abstract class BaseDraggingActivity extends BaseActivity
         // Update theme
         WallpaperColorInfo wallpaperColorInfo = WallpaperColorInfo.getInstance(this);
         wallpaperColorInfo.addOnChangeListener(this);
+        try {
+            getContentResolver().registerContentObserver(GLOBAL_STYLE_URI, false,
+                    mGlobalStyleObserver);
+        } catch (RuntimeException e) {
+            // no Lineage settings provider
+        }
         int themeRes = getThemeRes(wallpaperColorInfo);
         if (themeRes != mThemeRes) {
             mThemeRes = themeRes;
@@ -88,8 +99,43 @@ public abstract class BaseDraggingActivity extends BaseActivity
         }
     }
 
+    // LineageOS global style (Settings > Display > Style): 2 light, 3 dark;
+    // the automatic styles keep following the wallpaper.
+    private static final Uri GLOBAL_STYLE_URI =
+            Uri.parse("content://lineagesettings/system/berry_global_style");
+    private static final int GLOBAL_STYLE_LIGHT = 2;
+    private static final int GLOBAL_STYLE_DARK = 3;
+
+    private final ContentObserver mGlobalStyleObserver =
+            new ContentObserver(new Handler(Looper.getMainLooper())) {
+        @Override
+        public void onChange(boolean selfChange) {
+            onExtractedColorsChanged(WallpaperColorInfo.getInstance(BaseDraggingActivity.this));
+        }
+    };
+
+    private int getGlobalStyle() {
+        try (Cursor c = getContentResolver().query(Uri.parse("content://lineagesettings/system"),
+                new String[] { "value" }, "name=?", new String[] { "berry_global_style" },
+                null)) {
+            if (c != null && c.moveToFirst()) {
+                return Integer.parseInt(c.getString(0));
+            }
+        } catch (RuntimeException e) {
+            // no Lineage settings provider: follow the wallpaper
+        }
+        return -1;
+    }
+
+    private boolean isDarkTheme(WallpaperColorInfo wallpaperColorInfo) {
+        int style = getGlobalStyle();
+        if (style == GLOBAL_STYLE_DARK) return true;
+        if (style == GLOBAL_STYLE_LIGHT) return false;
+        return wallpaperColorInfo.isDark();
+    }
+
     protected int getThemeRes(WallpaperColorInfo wallpaperColorInfo) {
-        if (wallpaperColorInfo.isDark()) {
+        if (isDarkTheme(wallpaperColorInfo)) {
             return wallpaperColorInfo.supportsDarkText() ?
                     R.style.AppTheme_Dark_DarkText : R.style.AppTheme_Dark;
         } else {
@@ -241,6 +287,7 @@ public abstract class BaseDraggingActivity extends BaseActivity
     protected void onDestroy() {
         super.onDestroy();
         WallpaperColorInfo.getInstance(this).removeOnChangeListener(this);
+        getContentResolver().unregisterContentObserver(mGlobalStyleObserver);
         mRotationListener.disable();
     }
 
